@@ -7,18 +7,86 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Dependencies
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+
+# Local environment
 *.local
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Python virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache / tooling
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# Backend generated files
+backend/generated/
+backend/output/
+backend/outputs/
+
+# Generated media
+*.wav
+*.mp3
+*.mp4
+*.webm
+*.mov
+*.avi
+
+# AI model files
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.onnx
+*.gguf
+
+# ComfyUI
+ComfyUI/
+comfyui/
+models/
+checkpoints/
+loras/
+vae/
+unet/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
