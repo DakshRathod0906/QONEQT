@@ -1,363 +1,885 @@
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
-  CheckCircle2,
+  Check,
+  Circle,
   Clapperboard,
   Download,
-  Film,
+  Image as ImageIcon,
   Loader2,
   Mic2,
   Play,
-  RefreshCw,
   Sparkles,
-  WandSparkles,
+  Video,
   Volume2,
-} from 'lucide-react'
-import { useLocation, useNavigate } from 'react-router-dom'
+} from "lucide-react";
 
-import mockBlueprint from '../data/mockBlueprint'
+const BACKEND_URL = "http://127.0.0.1:8000";
 
-const pipeline = [
-  { label: 'Script', icon: Sparkles },
-  { label: 'Scene Blueprint', icon: Film },
-  { label: 'Visuals', icon: WandSparkles },
-  { label: 'Voice', icon: Mic2 },
-  { label: 'Captions', icon: Clapperboard },
-  { label: 'Composition', icon: Film },
-]
+export default function Studio() {
+  const location = useLocation();
+  const navigate = useNavigate();
 
-function Studio() {
-  const navigate = useNavigate()
-  const location = useLocation()
+  const blueprint = location.state?.blueprint;
+  const input = location.state?.input;
 
-  const blueprint = location.state?.blueprint || mockBlueprint
-  const input = location.state?.input
+  const [status, setStatus] = useState("idle");
+  const [scenes, setScenes] = useState([]);
+  const [selectedScene, setSelectedScene] = useState(0);
+  const [error, setError] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
 
-  const scenes = blueprint.scenes || []
+  useEffect(() => {
+    if (!blueprint) {
+      navigate("/create");
+    }
+  }, [blueprint, navigate]);
+
+  if (!blueprint) {
+    return null;
+  }
+
+  // ==================================================
+  // PIPELINE
+  // ==================================================
+
+  const pipeline = [
+    {
+      id: "blueprint",
+      label: "Blueprint",
+      icon: Sparkles,
+      description: "Story structure",
+      done: true,
+    },
+    {
+      id: "visuals",
+      label: "Visuals",
+      icon: ImageIcon,
+      description: "AI visuals",
+      done: scenes.length > 0,
+      active: status === "generating",
+    },
+    {
+      id: "voice",
+      label: "Voice",
+      icon: Mic2,
+      description: "Narration",
+      done: scenes.length > 0,
+    },
+    {
+      id: "compose",
+      label: "Compose",
+      icon: Video,
+      description: "Final video",
+      done: Boolean(videoUrl),
+      active: status === "composing",
+    },
+    {
+      id: "quality",
+      label: "Quality Check",
+      icon: Check,
+      description: "Ready to publish",
+      done: Boolean(videoUrl),
+    },
+  ];
+
+  // ==================================================
+  // FILE NAME HELPER
+  // ==================================================
+
+  const getFileName = (path) => {
+    if (!path) return "";
+
+    return path
+      .replaceAll("\\", "/")
+      .split("/")
+      .pop();
+  };
+
+  // ==================================================
+  // COMPOSE VIDEO
+  // ==================================================
+
+  const composeVideo = async (generatedScenes) => {
+    setStatus("composing");
+    setError("");
+
+    try {
+      const response = await fetch(
+        `${BACKEND_URL}/compose-video`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            scenes: generatedScenes.map((scene) => ({
+              image: scene.image,
+              audio: scene.audio,
+              duration: scene.duration,
+            })),
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Video composition failed"
+        );
+      }
+
+      const finalVideoUrl =
+        `${BACKEND_URL}${data.video}`;
+
+      setVideoUrl(finalVideoUrl);
+      setStatus("complete");
+
+    } catch (err) {
+      console.error("Composition error:", err);
+
+      setError(
+        err.message ||
+        "Video composition failed."
+      );
+
+      setStatus("error");
+    }
+  };
+
+  // ==================================================
+  // GENERATE MEDIA
+  // ==================================================
+
+  const generateMedia = async () => {
+    setStatus("generating");
+    setError("");
+    setVideoUrl("");
+    setScenes([]);
+
+    try {
+      const response = await fetch(
+        `${BACKEND_URL}/generate-all-scenes`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            topic:
+              input?.idea ||
+              blueprint.title ||
+              "AI generated video",
+
+            content_type:
+              input?.contentType ||
+              "short",
+
+            tone:
+              input?.tone ||
+              "Cinematic",
+
+            duration:
+              Number(input?.duration) ||
+              Number(blueprint.duration) ||
+              30,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error ||
+          "Media generation failed"
+        );
+      }
+
+      // ==================================================
+      // PREPARE GENERATED SCENES
+      // ==================================================
+
+      const preparedScenes =
+        data.scenes.map((scene) => ({
+          ...scene,
+
+          imageUrl:
+            `${BACKEND_URL}/generated/${getFileName(
+              scene.image
+            )}`,
+
+          audioUrl:
+            `${BACKEND_URL}/generated/audio/${getFileName(
+              scene.audio
+            )}`,
+        }));
+
+      setScenes(preparedScenes);
+
+      // ==================================================
+      // AUTOMATICALLY COMPOSE VIDEO
+      // ==================================================
+
+      await composeVideo(
+        preparedScenes
+      );
+
+    } catch (err) {
+      console.error(
+        "Media generation error:",
+        err
+      );
+
+      setError(
+        err.message ||
+        "Media generation failed."
+      );
+
+      setStatus("error");
+    }
+  };
+
+  // ==================================================
+  // BACK TO BLUEPRINT
+  // ==================================================
+
+  const goBack = () => {
+    navigate("/blueprint", {
+      state: {
+        blueprint,
+        input,
+      },
+    });
+  };
+
+  // ==================================================
+  // CURRENT SCENE
+  // ==================================================
+
+  const currentScene =
+    scenes[selectedScene];
+
+  // ==================================================
+  // RENDER
+  // ==================================================
 
   return (
-    <div className="min-h-full bg-zinc-950 px-8 py-8">
-      {/* Header */}
-      <div className="mb-8 flex items-start justify-between">
-        <div>
-          <button
-            onClick={() => navigate('/blueprint', {
-              state: { blueprint, input },
-            })}
-            className="mb-4 flex items-center gap-2 text-xs text-zinc-500 transition hover:text-white"
-          >
-            <ArrowLeft size={14} />
-            Back to Blueprint
-          </button>
+    <div className="min-h-screen bg-black text-white">
+
+      {/* ==================================================
+          HEADER
+      ================================================== */}
+
+      <header className="border-b border-white/10 bg-black/80 backdrop-blur-xl">
+
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between px-8 py-5">
+
+          {/* LEFT */}
+
+          <div className="flex items-center gap-4">
+
+            <button
+              onClick={goBack}
+              className="rounded-xl border border-white/10 p-2.5 text-white/60 transition hover:bg-white/5 hover:text-white"
+            >
+              <ArrowLeft size={18} />
+            </button>
+
+            <div>
+
+              <div className="flex items-center gap-2">
+
+                <Clapperboard
+                  size={18}
+                  className="text-blue-400"
+                />
+
+                <span className="text-sm font-semibold">
+                  Qoneqt Studio
+                </span>
+
+              </div>
+
+              <p className="mt-1 text-xs text-white/40">
+                AI Content Production Pipeline
+              </p>
+
+            </div>
+
+          </div>
+
+          {/* RIGHT */}
 
           <div className="flex items-center gap-3">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-blue-400">
-                Video Studio
-              </p>
 
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">
-                {blueprint.title}
-              </h1>
+            {status === "complete" && (
+              <div className="flex items-center gap-2 rounded-full border border-green-400/20 bg-green-400/5 px-3 py-1.5 text-xs text-green-300">
 
-              <p className="mt-2 text-sm text-zinc-500">
-                Assemble and review your AI-generated content.
-              </p>
-            </div>
+                <Check size={14} />
+
+                Video ready
+
+              </div>
+            )}
+
+            {status === "composing" && (
+              <div className="flex items-center gap-2 rounded-full border border-blue-400/20 bg-blue-400/5 px-3 py-1.5 text-xs text-blue-300">
+
+                <Loader2
+                  size={14}
+                  className="animate-spin"
+                />
+
+                Composing video...
+
+              </div>
+            )}
+
+            <button
+              onClick={generateMedia}
+              disabled={
+                status === "generating" ||
+                status === "composing"
+              }
+              className="flex items-center gap-2 rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+
+              {status === "generating" ? (
+                <>
+                  <Loader2
+                    size={16}
+                    className="animate-spin"
+                  />
+
+                  Generating...
+                </>
+              ) : status === "composing" ? (
+                <>
+                  <Loader2
+                    size={16}
+                    className="animate-spin"
+                  />
+
+                  Composing...
+                </>
+              ) : (
+                <>
+                  <Sparkles size={16} />
+
+                  Generate Media
+                </>
+              )}
+
+            </button>
+
           </div>
+
         </div>
 
-        <div className="flex items-center gap-3">
-          <button className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-white">
-            <Download size={16} />
-            Export
-          </button>
+      </header>
 
-          <button className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-500">
-            <Sparkles size={16} />
-            Publish
-          </button>
-        </div>
-      </div>
+      {/* ==================================================
+          MAIN
+      ================================================== */}
 
-      {/* Main Studio */}
-      <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-6">
-        {/* Left */}
-        <div className="space-y-6">
-          {/* Video Preview */}
-          <section className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/40">
-            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
-              <div>
-                <p className="text-sm font-medium text-white">Video Preview</p>
-                <p className="mt-1 text-xs text-zinc-600">
-                  Final composition preview
-                </p>
-              </div>
+      <main className="mx-auto max-w-[1500px] px-8 py-8">
 
-              <span className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-[11px] text-zinc-500">
-                9:16 • {input?.duration || 30}s
-              </span>
-            </div>
+        {/* TITLE */}
 
-            <div className="flex min-h-[560px] items-center justify-center bg-black p-8">
-              <div className="relative aspect-[9/16] h-[500px] overflow-hidden rounded-xl border border-zinc-800 bg-gradient-to-b from-zinc-900 via-zinc-950 to-black shadow-2xl">
-                {/* Fake visual background */}
-                <div className="absolute inset-0 opacity-70">
-                  <div className="absolute left-1/2 top-1/3 h-40 w-40 -translate-x-1/2 rounded-full bg-blue-500/20 blur-3xl" />
-                  <div className="absolute bottom-20 left-10 h-24 w-24 rounded-full bg-indigo-500/10 blur-2xl" />
-                </div>
+        <div className="mb-8">
 
-                <div className="relative flex h-full flex-col items-center justify-between p-6">
-                  <div className="mt-8 text-center">
-                    <p className="text-[9px] font-semibold uppercase tracking-[0.3em] text-blue-400">
-                      AI GENERATED
-                    </p>
+          <p className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-blue-400">
+            Video Studio
+          </p>
 
-                    <h2 className="mt-3 text-lg font-semibold leading-tight text-white">
-                      {blueprint.title}
-                    </h2>
-                  </div>
+          <h1 className="text-3xl font-semibold tracking-tight">
+            {blueprint.title}
+          </h1>
 
-                  <button className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-black shadow-lg transition hover:scale-105">
-                    <Play size={21} fill="currentColor" />
-                  </button>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-white/45">
+            {blueprint.hook}
+          </p>
 
-                  <div className="w-full">
-                    <p className="line-clamp-2 text-center text-xs leading-relaxed text-zinc-300">
-                      {scenes[0]?.narration || blueprint.hook}
-                    </p>
-
-                    <div className="mt-4 h-1 overflow-hidden rounded-full bg-zinc-800">
-                      <div className="h-full w-1/4 rounded-full bg-blue-500" />
-                    </div>
-
-                    <div className="mt-2 flex justify-between text-[9px] text-zinc-600">
-                      <span>00:00</span>
-                      <span>00:{String(input?.duration || 30).padStart(2, '0')}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* Scene Timeline */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40">
-            <div className="border-b border-zinc-800 px-5 py-4">
-              <p className="text-sm font-medium text-white">Scene Timeline</p>
-              <p className="mt-1 text-xs text-zinc-600">
-                {scenes.length} scenes • {input?.duration || 30}s total
-              </p>
-            </div>
-
-            <div className="grid grid-cols-5 gap-3 p-5">
-              {scenes.map((scene, index) => (
-                <div
-                  key={scene.scene || index}
-                  className={`group cursor-pointer rounded-xl border p-3 transition ${
-                    index === 0
-                      ? 'border-blue-500/40 bg-blue-500/5'
-                      : 'border-zinc-800 bg-zinc-950 hover:border-zinc-700'
-                  }`}
-                >
-                  <div className="mb-3 flex aspect-video items-center justify-center rounded-lg bg-zinc-900">
-                    <Film size={18} className="text-zinc-600" />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-zinc-300">
-                      Scene {index + 1}
-                    </span>
-
-                    <span className="text-[10px] text-zinc-600">
-                      {scene.duration}s
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Scene Details */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40">
-            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
-              <div>
-                <p className="text-sm font-medium text-white">
-                  Scene 1 Details
-                </p>
-                <p className="mt-1 text-xs text-zinc-600">
-                  Review generated content before composition.
-                </p>
-              </div>
-
-              <button className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-400 transition hover:text-white">
-                <RefreshCw size={13} />
-                Regenerate
-              </button>
-            </div>
-
-            <div className="space-y-5 p-5">
-              <div>
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
-                  Narration
-                </p>
-
-                <p className="text-sm leading-7 text-zinc-300">
-                  {scenes[0]?.narration || 'No narration available.'}
-                </p>
-              </div>
-
-              <div>
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
-                  Visual Direction
-                </p>
-
-                <p className="text-sm leading-7 text-zinc-400">
-                  {scenes[0]?.visual_prompt || 'No visual direction available.'}
-                </p>
-              </div>
-            </div>
-          </section>
         </div>
 
-        {/* Right */}
-        <aside className="space-y-6">
-          {/* Pipeline */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
-            <div className="mb-5">
-              <p className="text-sm font-medium text-white">
-                Generation Pipeline
+        {/* ==================================================
+            PIPELINE
+        ================================================== */}
+
+        <section className="mb-8 rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+
+          <div className="mb-5 flex items-center justify-between">
+
+            <div>
+
+              <h2 className="text-sm font-semibold">
+                Production pipeline
+              </h2>
+
+              <p className="mt-1 text-xs text-white/35">
+                One coordinated workflow from
+                blueprint to publish-ready media.
               </p>
 
-              <p className="mt-1 text-xs text-zinc-600">
-                AI production status
-              </p>
             </div>
 
-            <div className="space-y-1">
-              {pipeline.map((item, index) => {
-                const Icon = item.icon
-                const completed = index < 3
-                const active = index === 3
+            {status === "generating" && (
+              <div className="flex items-center gap-2 text-xs text-blue-300">
+
+                <Loader2
+                  size={14}
+                  className="animate-spin"
+                />
+
+                AI production running
+
+              </div>
+            )}
+
+            {status === "composing" && (
+              <div className="flex items-center gap-2 text-xs text-blue-300">
+
+                <Loader2
+                  size={14}
+                  className="animate-spin"
+                />
+
+                Composing final video
+
+              </div>
+            )}
+
+          </div>
+
+          <div className="grid grid-cols-5 gap-3">
+
+            {pipeline.map(
+              (step) => {
+
+                const Icon = step.icon;
 
                 return (
                   <div
-                    key={item.label}
-                    className="flex items-center gap-3 rounded-xl px-3 py-3"
-                  >
-                    <div
-                      className={`flex h-8 w-8 items-center justify-center rounded-lg ${
-                        completed
-                          ? 'bg-emerald-500/10 text-emerald-400'
-                          : active
-                            ? 'bg-blue-500/10 text-blue-400'
-                            : 'bg-zinc-900 text-zinc-600'
+                    key={step.id}
+                    className={`relative rounded-xl border p-4 ${step.done
+                      ? "border-green-400/20 bg-green-400/[0.04]"
+                      : step.active
+                        ? "border-blue-400/30 bg-blue-400/[0.05]"
+                        : "border-white/10 bg-white/[0.02]"
                       }`}
-                    >
-                      {completed ? (
-                        <CheckCircle2 size={16} />
-                      ) : active ? (
-                        <Loader2 size={16} className="animate-spin" />
-                      ) : (
-                        <Icon size={16} />
-                      )}
-                    </div>
+                  >
 
-                    <div className="flex-1">
-                      <p
-                        className={`text-xs font-medium ${
-                          completed || active
-                            ? 'text-zinc-200'
-                            : 'text-zinc-600'
-                        }`}
-                      >
-                        {item.label}
-                      </p>
+                    <div className="flex items-center justify-between">
 
-                      <p className="mt-0.5 text-[10px] text-zinc-600">
-                        {completed
-                          ? 'Completed'
-                          : active
-                            ? 'Generating...'
-                            : 'Waiting'}
-                      </p>
-                    </div>
-
-                    {completed && (
-                      <CheckCircle2
-                        size={14}
-                        className="text-emerald-500"
+                      <Icon
+                        size={18}
+                        className={
+                          step.done
+                            ? "text-green-400"
+                            : step.active
+                              ? "text-blue-400"
+                              : "text-white/30"
+                        }
                       />
-                    )}
+
+                      {step.done ? (
+                        <Check
+                          size={15}
+                          className="text-green-400"
+                        />
+                      ) : step.active ? (
+                        <Loader2
+                          size={15}
+                          className="animate-spin text-blue-400"
+                        />
+                      ) : (
+                        <Circle
+                          size={12}
+                          className="text-white/20"
+                        />
+                      )}
+
+                    </div>
+
+                    <p className="mt-4 text-sm font-medium">
+                      {step.label}
+                    </p>
+
+                    <p className="mt-1 text-[11px] text-white/35">
+                      {step.description}
+                    </p>
+
                   </div>
-                )
-              })}
-            </div>
-          </section>
+                );
+              }
+            )}
 
-          {/* Audio */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
-                <Volume2 size={17} />
-              </div>
+          </div>
+
+        </section>
+
+        {/* ==================================================
+            ERROR
+        ================================================== */}
+
+        {error && (
+          <div className="mb-6 rounded-xl border border-red-400/20 bg-red-400/5 p-4">
+
+            <p className="text-sm font-medium text-red-300">
+              Generation failed
+            </p>
+
+            <p className="mt-1 text-xs text-red-200/60">
+              {error}
+            </p>
+
+          </div>
+        )}
+
+        {/* ==================================================
+            MAIN STUDIO GRID
+        ================================================== */}
+
+        <div className="grid grid-cols-[1fr_360px] gap-6">
+
+          {/* ==================================================
+              VIDEO PREVIEW
+          ================================================== */}
+
+          <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
+
+            <div className="mb-5 flex items-center justify-between">
 
               <div>
-                <p className="text-sm font-medium text-white">Voice Track</p>
-                <p className="text-[11px] text-zinc-600">
-                  AI generated narration
+
+                <h2 className="text-sm font-semibold">
+                  Video preview
+                </h2>
+
+                <p className="mt-1 text-xs text-white/35">
+                  {blueprint.duration}s vertical content
                 </p>
+
               </div>
+
+              {videoUrl && (
+                <a
+                  href={videoUrl}
+                  download="qoneqt-ai-video.mp4"
+                  className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs text-white/70 transition hover:bg-white/5 hover:text-white"
+                >
+                  <Download size={14} />
+                  Export MP4
+                </a>
+              )}
+
             </div>
 
-            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
-              <div className="mb-3 flex items-center justify-between">
-                <span className="text-[10px] text-zinc-600">
-                  en-US • AI Voice
-                </span>
+            <div className="flex min-h-[650px] items-center justify-center rounded-2xl border border-white/10 bg-black">
 
-                <span className="text-[10px] text-zinc-600">
-                  00:30
-                </span>
-              </div>
+              {/* FINAL VIDEO */}
 
-              <div className="flex items-center gap-1">
-                {Array.from({ length: 32 }).map((_, index) => (
-                  <div
-                    key={index}
-                    className="w-1 rounded-full bg-zinc-700"
-                    style={{
-                      height: `${8 + ((index * 17) % 22)}px`,
-                    }}
+              {videoUrl ? (
+
+                <video
+                  src={videoUrl}
+                  controls
+                  autoPlay
+                  className="max-h-[620px] max-w-full rounded-xl"
+                />
+
+              ) : currentScene ? (
+
+                /* SCENE PREVIEW */
+
+                <div className="relative overflow-hidden rounded-xl">
+
+                  <img
+                    src={currentScene.imageUrl}
+                    alt={`Scene ${currentScene.scene}`}
+                    className="max-h-[620px] max-w-full object-contain"
                   />
-                ))}
-              </div>
+
+                  <div className="absolute bottom-4 left-4 right-4 rounded-xl border border-white/10 bg-black/70 p-4 backdrop-blur-xl">
+
+                    <p className="text-xs text-white/40">
+                      Scene {currentScene.scene}
+                    </p>
+
+                    <p className="mt-1 text-sm leading-5">
+                      {currentScene.narration}
+                    </p>
+
+                  </div>
+
+                </div>
+
+              ) : (
+
+                /* EMPTY STATE */
+
+                <div className="max-w-sm text-center">
+
+                  <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03]">
+
+                    <Play
+                      size={24}
+                      className="text-white/30"
+                    />
+
+                  </div>
+
+                  <h3 className="text-sm font-semibold">
+                    Ready to generate
+                  </h3>
+
+                  <p className="mt-2 text-xs leading-5 text-white/35">
+                    Generate the visual scenes,
+                    narration and final video from
+                    your AI blueprint.
+                  </p>
+
+                  <button
+                    onClick={generateMedia}
+                    className="mt-5 rounded-xl bg-blue-500 px-5 py-2.5 text-xs font-semibold hover:bg-blue-400"
+                  >
+                    Generate Media
+                  </button>
+
+                </div>
+
+              )}
+
             </div>
+
           </section>
 
-          {/* Quality Check */}
-          <section className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
-            <div className="flex items-start gap-3">
-              <CheckCircle2
-                size={19}
-                className="mt-0.5 shrink-0 text-emerald-400"
-              />
+          {/* ==================================================
+              SCENE TIMELINE
+          ================================================== */}
 
-              <div>
-                <p className="text-sm font-medium text-emerald-300">
-                  Quality Check Passed
-                </p>
+          <aside className="rounded-2xl border border-white/10 bg-white/[0.02]">
 
-                <p className="mt-1 text-xs leading-5 text-zinc-500">
-                  All generated assets are available and the composition is
-                  ready for final rendering.
-                </p>
-              </div>
+            <div className="border-b border-white/10 p-5">
+
+              <h2 className="text-sm font-semibold">
+                Scene timeline
+              </h2>
+
+              <p className="mt-1 text-xs text-white/35">
+                {scenes.length ||
+                  blueprint.scenes.length}{" "}
+                scenes
+              </p>
+
             </div>
+
+            <div className="max-h-[700px] overflow-y-auto p-3">
+
+              {(scenes.length
+                ? scenes
+                : blueprint.scenes
+              ).map(
+                (scene, index) => {
+
+                  const generated =
+                    scenes.length > 0;
+
+                  return (
+                    <button
+                      key={scene.scene}
+                      onClick={() =>
+                        generated &&
+                        setSelectedScene(index)
+                      }
+                      className={`mb-2 w-full rounded-xl border p-3 text-left transition ${selectedScene === index
+                        ? "border-blue-400/30 bg-blue-400/[0.06]"
+                        : "border-white/5 bg-white/[0.015] hover:bg-white/[0.03]"
+                        }`}
+                    >
+
+                      <div className="flex gap-3">
+
+                        <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black">
+
+                          {generated ? (
+
+                            <img
+                              src={scene.imageUrl}
+                              alt=""
+                              className="h-full w-full object-cover"
+                            />
+
+                          ) : (
+
+                            <div className="flex h-full items-center justify-center">
+
+                              <ImageIcon
+                                size={18}
+                                className="text-white/20"
+                              />
+
+                            </div>
+
+                          )}
+
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+
+                          <div className="flex items-center justify-between">
+
+                            <span className="text-[11px] font-medium text-blue-400">
+                              SCENE {scene.scene}
+                            </span>
+
+                            <span className="text-[10px] text-white/30">
+                              {scene.duration}s
+                            </span>
+
+                          </div>
+
+                          <p className="mt-1 line-clamp-3 text-xs leading-4 text-white/55">
+                            {scene.narration}
+                          </p>
+
+                        </div>
+
+                      </div>
+
+                    </button>
+                  );
+                }
+              )}
+
+            </div>
+
+          </aside>
+
+        </div>
+
+        {/* ==================================================
+            SELECTED SCENE DETAILS
+        ================================================== */}
+
+        {currentScene && (
+
+          <section className="mt-6 grid grid-cols-2 gap-6">
+
+            {/* NARRATION */}
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+
+              <div className="flex items-center gap-2">
+
+                <Volume2
+                  size={16}
+                  className="text-blue-400"
+                />
+
+                <h3 className="text-sm font-semibold">
+                  Narration
+                </h3>
+
+              </div>
+
+              <p className="mt-4 text-sm leading-6 text-white/60">
+                {currentScene.narration}
+              </p>
+
+              {currentScene.audioUrl && (
+                <audio
+                  controls
+                  src={currentScene.audioUrl}
+                  className="mt-5 w-full"
+                />
+              )}
+
+            </div>
+
+            {/* VISUAL PROMPT */}
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+
+              <div className="flex items-center gap-2">
+
+                <ImageIcon
+                  size={16}
+                  className="text-blue-400"
+                />
+
+                <h3 className="text-sm font-semibold">
+                  Visual prompt
+                </h3>
+
+              </div>
+
+              <p className="mt-4 text-sm leading-6 text-white/45">
+                {currentScene.visual_prompt}
+              </p>
+
+            </div>
+
           </section>
-        </aside>
-      </div>
+
+        )}
+
+        {/* ==================================================
+            FINAL VIDEO STATUS
+        ================================================== */}
+
+        {videoUrl && (
+
+          <section className="mt-6 rounded-2xl border border-green-400/20 bg-green-400/[0.03] p-5">
+
+            <div className="flex items-center justify-between">
+
+              <div className="flex items-center gap-3">
+
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-400/10">
+
+                  <Check
+                    size={20}
+                    className="text-green-400"
+                  />
+
+                </div>
+
+                <div>
+
+                  <h3 className="text-sm font-semibold">
+                    Video ready
+                  </h3>
+
+                  <p className="mt-1 text-xs text-white/40">
+                    Your AI-generated video has
+                    been successfully composed.
+                  </p>
+
+                </div>
+
+              </div>
+
+              <a
+                href={videoUrl}
+                download="qoneqt-ai-video.mp4"
+                className="flex items-center gap-2 rounded-xl bg-green-500 px-5 py-2.5 text-xs font-semibold text-black transition hover:bg-green-400"
+              >
+                <Download size={15} />
+                Export MP4
+              </a>
+
+            </div>
+
+          </section>
+
+        )}
+
+      </main>
+
     </div>
-  )
+  );
 }
-
-export default Studio

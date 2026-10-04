@@ -95,11 +95,18 @@ function Create() {
 
       const data = await response.json()
 
-      if (!data.success) {
-        throw new Error(data.error || 'Blueprint generation failed')
-      }
+      const blueprint = data.blueprint ?? data
 
-      const blueprint = data.blueprint
+      if (
+        !blueprint ||
+        !blueprint.title ||
+        !blueprint.hook ||
+        !blueprint.script ||
+        !Array.isArray(blueprint.scenes)
+      ) {
+        console.error('Invalid blueprint response:', data)
+        throw new Error('Blueprint schema mismatch')
+      }
 
       navigate('/blueprint', {
         state: {

@@ -1,14 +1,38 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import ollama
 import json
-
+import subprocess
+import uuid
+from pathlib import Path
 from comfy_client import generate_image
 from tts_client import generate_voice
+from fastapi.responses import FileResponse
 
 
 app = FastAPI(title="Qoneqt AI Content Engine")
+
+
+# ==================================================
+# GENERATED FILES
+# ==================================================
+
+GENERATED_DIR = Path("generated").resolve()
+GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount(
+    "/generated",
+    StaticFiles(directory=str(GENERATED_DIR)),
+    name="generated",
+)
+
+
+# ==================================================
+# CORS
+# ==================================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -21,9 +45,10 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------
-# Request Models
-# --------------------------------------------------
+# ==================================================
+# REQUEST MODEL
+# ==================================================
+
 class ContentRequest(BaseModel):
     topic: str
     content_type: str = "short"
@@ -31,177 +56,242 @@ class ContentRequest(BaseModel):
     duration: int = 30
 
 
-# --------------------------------------------------
-# Root
-# --------------------------------------------------
+# ==================================================
+# ROOT
+# ==================================================
 
 @app.get("/")
 def root():
     return {
         "status": "online",
-        "service": "Qoneqt AI Content Engine"
+        "service": "Qoneqt AI Content Engine",
     }
 
 
-# --------------------------------------------------
-# Qwen3 Blueprint Generation
-# --------------------------------------------------
+# ==================================================
+# QWEN BLUEPRINT GENERATION
+# ==================================================
+
 def generate_blueprint(request: ContentRequest):
 
     prompt = f"""
 Create a short vertical video blueprint.
 
 INPUT:
+
 Topic: {request.topic}
 Content type: {request.content_type}
 Tone: {request.tone}
 Target duration: {request.duration} seconds.
 
 OBJECTIVE:
+
 Create an engaging, coherent short-form video suitable for social media.
+
 The video must have exactly 5 scenes.
 
-DURATION RULE:
-The total duration of all 5 scenes MUST equal exactly {request.duration} seconds.
+IMPORTANT:
 
-Recommended distribution:
-- 15 seconds: approximately 3, 3, 3, 3, 3
-- 30 seconds: approximately 6, 6, 6, 6, 6
-- 60 seconds: approximately 12, 12, 12, 12, 12
-
-You may adjust individual scene durations when necessary,
-but the final sum MUST be exactly {request.duration}.
+Generate the CONTENT for each scene.
+The backend will assign the exact scene durations automatically.
 
 CONTENT RULES:
+
 - Create one coherent story from beginning to end.
 - The hook must immediately capture attention.
 - The script must summarize the complete story.
 - Scene narrations must collectively form the complete narration.
 - Each visual prompt must directly match its scene narration.
-- Keep narration appropriate for the target duration.
-- Make visual prompts detailed enough for an image/video generation model.
+- Keep narration concise and appropriate for the target duration.
+- Make visual prompts detailed enough for an image generation model.
 - Do not invent fields outside the required schema.
 
-OUTPUT FORMAT:
-Return ONLY valid JSON.
-Do not return Markdown.
-Do not use ```json.
-Do not add explanations.
-Do not add comments.
-Do not add text before or after the JSON.
+IMPORTANT FACTUALITY RULE:
 
-REQUIRED JSON SCHEMA:
+- Do not invent obviously false facts.
+- Prefer well-known factual information.
+- Keep claims concise and suitable for a short video.
+
+REQUIRED JSON STRUCTURE:
 
 {{
   "title": "Short engaging video title",
   "hook": "Strong opening hook",
-  "script": "Complete short-form narration/script for the entire video",
-  "duration": {request.duration},
+  "script": "Complete short-form narration",
   "scenes": [
     {{
       "scene": 1,
-      "duration": 3,
       "narration": "Narration for scene 1",
       "visual_prompt": "Detailed visual description for scene 1"
     }},
     {{
       "scene": 2,
-      "duration": 3,
       "narration": "Narration for scene 2",
       "visual_prompt": "Detailed visual description for scene 2"
     }},
     {{
       "scene": 3,
-      "duration": 3,
       "narration": "Narration for scene 3",
       "visual_prompt": "Detailed visual description for scene 3"
     }},
     {{
       "scene": 4,
-      "duration": 3,
       "narration": "Narration for scene 4",
       "visual_prompt": "Detailed visual description for scene 4"
     }},
     {{
       "scene": 5,
-      "duration": 3,
       "narration": "Narration for scene 5",
       "visual_prompt": "Detailed visual description for scene 5"
     }}
   ]
 }}
 
-FINAL VALIDATION BEFORE RESPONDING:
+RULES:
+
 - Exactly 5 scenes.
-- Scene numbers are 1, 2, 3, 4, 5.
-- duration equals exactly {request.duration}.
-- Sum of all scene durations equals exactly {request.duration}.
-- Every scene has narration.
-- Every scene has visual_prompt.
-- script is present.
-- title is present.
-- hook is present.
+- Every scene must contain narration.
+- Every scene must contain visual_prompt.
 - Return JSON only.
+- Do not return Markdown.
+- Do not return ```json.
+- Do not explain anything.
+- Do not return normal conversational text.
 """
 
-    response = ollama.chat(
-        model="qwen3:4b",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a strict JSON API. "
-                    "Always follow the exact JSON schema requested. "
-                    "Return JSON only."
-                )
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        options={
-            "temperature": 0
-        }
-    )
+    # ==================================================
+    # ASK QWEN
+    # ==================================================
 
-    raw_output = response["message"]["content"].strip()
+    raw_output = None
+    blueprint = None
 
-    # Remove markdown if Qwen adds it
-    raw_output = raw_output.replace("```json", "")
-    raw_output = raw_output.replace("```", "")
-    raw_output = raw_output.strip()
+    for attempt in range(2):
 
-    # Extract JSON object
-    start = raw_output.find("{")
-    end = raw_output.rfind("}")
+        try:
 
-    if start != -1 and end != -1:
-        raw_output = raw_output[start:end + 1]
+            response = ollama.chat(
+                model="qwen3:4b",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict JSON API. "
+                            "Return ONLY valid JSON. "
+                            "Never return normal conversational text. "
+                            "Follow the requested schema exactly."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                format="json",
+                options={
+                    "temperature": 0,
+                },
+            )
 
-    try:
-        blueprint = json.loads(raw_output)
-    except json.JSONDecodeError:
+            raw_output = response["message"]["content"].strip()
+
+        except Exception as e:
+
+            if attempt == 1:
+                return {
+                    "success": False,
+                    "error": "Qwen generation failed",
+                    "details": str(e),
+                }
+
+            continue
+
+        # ==================================================
+        # CLEAN OUTPUT
+        # ==================================================
+
+        cleaned_output = raw_output
+
+        cleaned_output = cleaned_output.replace(
+            "```json",
+            "",
+        )
+
+        cleaned_output = cleaned_output.replace(
+            "```",
+            "",
+        )
+
+        cleaned_output = cleaned_output.strip()
+
+        # ==================================================
+        # PARSE JSON
+        # ==================================================
+
+        try:
+
+            blueprint = json.loads(cleaned_output)
+            break
+
+        except json.JSONDecodeError:
+
+            start = cleaned_output.find("{")
+            end = cleaned_output.rfind("}")
+
+            if start != -1 and end != -1:
+
+                extracted = cleaned_output[
+                    start:end + 1
+                ]
+
+                try:
+
+                    blueprint = json.loads(
+                        extracted
+                    )
+
+                    break
+
+                except json.JSONDecodeError:
+                    blueprint = None
+
+            else:
+                blueprint = None
+
+            if attempt == 1:
+
+                return {
+                    "success": False,
+                    "error": "Qwen returned invalid JSON",
+                    "raw_output": raw_output,
+                }
+
+    # ==================================================
+    # VALIDATE BLUEPRINT OBJECT
+    # ==================================================
+
+    if not isinstance(blueprint, dict):
 
         return {
             "success": False,
-            "error": "Qwen returned invalid JSON",
-            "raw_output": raw_output
+            "error": "Qwen returned an invalid blueprint",
+            "raw_output": raw_output,
         }
 
-    # ------------------------------------------------
-    # VALIDATE BLUEPRINT
-    # ------------------------------------------------
+    # ==================================================
+    # REQUIRED TOP-LEVEL FIELDS
+    # ==================================================
+
     required_fields = [
         "title",
         "hook",
         "script",
-        "duration",
-     "scenes"
+        "scenes",
     ]
 
     missing_fields = [
-        field for field in required_fields
+        field
+        for field in required_fields
         if field not in blueprint
     ]
 
@@ -211,15 +301,22 @@ FINAL VALIDATION BEFORE RESPONDING:
             "success": False,
             "error": "Blueprint schema mismatch",
             "missing_fields": missing_fields,
-            "raw_output": blueprint
+            "blueprint": blueprint,
         }
 
-    if not isinstance(blueprint["scenes"], list):
+    # ==================================================
+    # VALIDATE SCENES
+    # ==================================================
+
+    if not isinstance(
+        blueprint["scenes"],
+        list,
+    ):
 
         return {
             "success": False,
             "error": "Scenes must be a list",
-            "blueprint": blueprint
+            "blueprint": blueprint,
         }
 
     if len(blueprint["scenes"]) != 5:
@@ -227,142 +324,499 @@ FINAL VALIDATION BEFORE RESPONDING:
         return {
             "success": False,
             "error": "Blueprint must contain exactly 5 scenes",
-            "blueprint": blueprint
+            "blueprint": blueprint,
         }
 
-    # Validate each scene
+    # ==================================================
+    # REPAIR / VALIDATE SCENES
+    # ==================================================
 
-    for index, scene in enumerate(blueprint["scenes"], start=1):
+    for index, scene in enumerate(
+        blueprint["scenes"],
+        start=1,
+    ):
 
-    # Qwen sometimes omits the scene number.
-    # The backend can safely assign it because
-    # scene order is already deterministic.
-        scene["scene"] = index
-
-    required_scene_fields = [
-        "duration",
-        "narration",
-        "visual_prompt"
-    ]
-
-    for field in required_scene_fields:
-
-        if field not in scene:
+        if not isinstance(scene, dict):
 
             return {
                 "success": False,
-                "error": f"Scene missing field: {field}",
-                "blueprint": blueprint
+                "error": f"Scene {index} is not a valid object",
+                "blueprint": blueprint,
             }
 
-    # Check duration
+        scene["scene"] = index
 
-    try:
+        if (
+            "narration" not in scene
+            or not scene["narration"]
+        ):
 
-        total_duration = sum(
-            int(scene["duration"])
-            for scene in blueprint["scenes"]
-        )
+            return {
+                "success": False,
+                "error": f"Scene {index} missing narration",
+                "blueprint": blueprint,
+            }
 
-    except Exception:
+        if (
+            "visual_prompt" not in scene
+            or not scene["visual_prompt"]
+        ):
 
-        return {
-            "success": False,
-            "error": "Invalid scene duration",
-            "blueprint": blueprint
-        }
+            scene["visual_prompt"] = (
+                "Cinematic visual representation of: "
+                f"{scene['narration']}. "
+                "Vertical 9:16 composition, "
+                "highly detailed, visually engaging, "
+                "realistic lighting, "
+                "suitable for short-form social media video."
+            )
 
-    if total_duration != request.duration:
+    # ==================================================
+    # DETERMINISTIC SCENE DURATIONS
+    # ==================================================
 
-        return {
-            "success": False,
-            "error": "Scene durations do not match target duration",
-            "expected": request.duration,
-            "actual": total_duration,
-            "blueprint": blueprint
-        }
+    base_duration = request.duration // 5
+    remainder = request.duration % 5
+
+    for index, scene in enumerate(
+        blueprint["scenes"]
+    ):
+
+        scene["duration"] = base_duration
+
+        if index < remainder:
+            scene["duration"] += 1
+
+    blueprint["duration"] = request.duration
+
+    # ==================================================
+    # SUCCESS
+    # ==================================================
 
     return {
         "success": True,
-        "blueprint": blueprint
+        "blueprint": blueprint,
     }
 
 
-# --------------------------------------------------
-# Generate Blueprint Endpoint
-# --------------------------------------------------
+# ==================================================
+# GENERATE BLUEPRINT ENDPOINT
+# ==================================================
 
 @app.post("/generate-blueprint")
-def generate_blueprint_endpoint(request: ContentRequest):
+def generate_blueprint_endpoint(
+    request: ContentRequest,
+):
 
     return generate_blueprint(request)
 
 
-# --------------------------------------------------
-# Generate Single Scene
-# --------------------------------------------------
+# ==================================================
+# GENERATE SINGLE SCENE
+# ==================================================
 
 @app.post("/generate-scene")
 def generate_scene(prompt: str):
 
-    image_path = generate_image(prompt)
+    try:
 
-    return {
-        "success": True,
-        "prompt": prompt,
-        "image": image_path
-    }
+        image_path = generate_image(
+            prompt
+        )
+
+        return {
+            "success": True,
+            "prompt": prompt,
+            "image": image_path,
+        }
+
+    except Exception as e:
+
+        return {
+            "success": False,
+            "error": "Image generation failed",
+            "details": str(e),
+        }
 
 
-# --------------------------------------------------
-# Generate All Scenes
-# Image + Voice
-# --------------------------------------------------
+# ==================================================
+# GENERATE ALL SCENES
+# IMAGE + VOICE
+# ==================================================
 
 @app.post("/generate-all-scenes")
-def generate_all_scenes(request: ContentRequest):
+def generate_all_scenes(
+    request: ContentRequest,
+):
 
-    # Generate blueprint
-    blueprint_response = generate_blueprint(request)
+    blueprint_response = generate_blueprint(
+        request
+    )
 
     if not blueprint_response.get("success"):
+
         return blueprint_response
 
-    blueprint = blueprint_response["blueprint"]
+    blueprint = blueprint_response[
+        "blueprint"
+    ]
 
     generated_scenes = []
 
-    # Generate image + voice for every scene
     for scene in blueprint["scenes"]:
 
         scene_number = scene["scene"]
 
-        # Generate image using ComfyUI
-        image_path = generate_image(
-            scene["visual_prompt"]
+        # --------------------------------------------------
+        # IMAGE
+        # --------------------------------------------------
+
+        try:
+
+            image_path = generate_image(
+                scene["visual_prompt"]
+            )
+
+        except Exception as e:
+
+            return {
+                "success": False,
+                "error": (
+                    f"Image generation failed "
+                    f"for scene {scene_number}"
+                ),
+                "details": str(e),
+                "blueprint": blueprint,
+                "completed_scenes": generated_scenes,
+            }
+
+        # --------------------------------------------------
+        # VOICE
+        # --------------------------------------------------
+
+        audio_filename = (
+            f"scene_{scene_number}.wav"
         )
 
-        # Generate narration using Piper
-        audio_filename = f"scene_{scene_number}.wav"
+        try:
 
-        audio_path = generate_voice(
-            scene["narration"],
-            audio_filename
+            audio_path = generate_voice(
+                scene["narration"],
+                audio_filename,
+            )
+
+        except Exception as e:
+
+            return {
+                "success": False,
+                "error": (
+                    f"Voice generation failed "
+                    f"for scene {scene_number}"
+                ),
+                "details": str(e),
+                "blueprint": blueprint,
+                "completed_scenes": generated_scenes,
+            }
+
+        # --------------------------------------------------
+        # STORE SCENE
+        # --------------------------------------------------
+
+        generated_scenes.append(
+            {
+                "scene": scene_number,
+                "duration": scene["duration"],
+                "narration": scene["narration"],
+                "visual_prompt": scene["visual_prompt"],
+                "image": image_path,
+                "audio": audio_path,
+            }
         )
 
-        generated_scenes.append({
-            "scene": scene_number,
-            "duration": scene["duration"],
-            "narration": scene["narration"],
-            "visual_prompt": scene["visual_prompt"],
-            "image": image_path,
-            "audio": audio_path
-        })
+    # ==================================================
+    # FINAL RESPONSE
+    # ==================================================
 
     return {
         "success": True,
         "title": blueprint["title"],
         "hook": blueprint["hook"],
+        "script": blueprint["script"],
         "duration": blueprint["duration"],
-        "scenes": generated_scenes
+        "scenes": generated_scenes,
     }
+
+
+# ==================================================
+# COMPOSE FINAL VIDEO WITH FFMPEG
+# ==================================================
+
+class ComposeRequest(BaseModel):
+    scenes: list
+
+
+@app.post("/compose-video")
+def compose_video(request: ComposeRequest):
+
+    generated_dir = GENERATED_DIR
+    temp_dir = generated_dir / "compose_temp"
+
+    temp_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if not request.scenes:
+
+        return {
+            "success": False,
+            "error": "No scenes provided",
+        }
+
+    scene_videos = []
+
+    try:
+
+        # ----------------------------------------------
+        # CREATE VIDEO FOR EACH SCENE
+        # ----------------------------------------------
+
+        for index, scene in enumerate(
+            request.scenes,
+            start=1,
+        ):
+
+            image_name = Path(
+                str(scene.get("image", ""))
+            ).name
+
+            audio_name = Path(
+                str(scene.get("audio", ""))
+            ).name
+
+            image_path = (
+                generated_dir / image_name
+            )
+
+            audio_path = (
+                generated_dir
+                / "audio"
+                / audio_name
+            )
+
+            if not image_path.exists():
+
+                return {
+                    "success": False,
+                    "error": f"Image not found: {image_name}",
+                }
+
+            if not audio_path.exists():
+
+                return {
+                    "success": False,
+                    "error": f"Audio not found: {audio_name}",
+                }
+
+            scene_video = (
+                temp_dir
+                / f"scene_{index}.mp4"
+            )
+
+            command = [
+                "ffmpeg",
+                "-y",
+
+                # Image
+                "-loop",
+                "1",
+                "-i",
+                str(image_path),
+
+                # Voice
+                "-i",
+                str(audio_path),
+
+                # Vertical video
+                "-vf",
+                (
+                    "scale=1080:1920:"
+                    "force_original_aspect_ratio=increase,"
+                    "crop=1080:1920,"
+                    "format=yuv420p"
+                ),
+
+                "-c:v",
+                "libx264",
+
+                "-preset",
+                "veryfast",
+
+                "-tune",
+                "stillimage",
+
+                "-c:a",
+                "aac",
+
+                "-b:a",
+                "128k",
+
+                "-shortest",
+
+                str(scene_video),
+            ]
+
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+
+                return {
+                    "success": False,
+                    "error": (
+                        f"FFmpeg failed on scene {index}"
+                    ),
+                    "details": result.stderr[-3000:],
+                }
+
+            scene_videos.append(
+                scene_video
+            )
+
+        # ----------------------------------------------
+        # CREATE CONCAT FILE
+        # ----------------------------------------------
+
+        concat_file = (
+            temp_dir / "concat.txt"
+        )
+
+        with open(
+            concat_file,
+            "w",
+            encoding="utf-8",
+        ) as f:
+
+            for video in scene_videos:
+
+                safe_path = str(
+                    video.resolve()
+                ).replace(
+                    "'",
+                    "'\\''",
+                )
+
+                f.write(
+                    f"file '{safe_path}'\n"
+                )
+
+        # ----------------------------------------------
+        # FINAL VIDEO
+        # ----------------------------------------------
+
+        output_name = (
+            f"qoneqt_video_{uuid.uuid4().hex[:8]}.mp4"
+        )
+
+        output_path = (
+            generated_dir / output_name
+        )
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-c",
+            "copy",
+            str(output_path),
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+
+            return {
+                "success": False,
+                "error": "Final video composition failed",
+                "details": result.stderr[-3000:],
+            }
+
+        # ----------------------------------------------
+        # CLEAN TEMP FILES
+        # ----------------------------------------------
+
+        for video in scene_videos:
+
+            try:
+                video.unlink()
+            except Exception:
+                pass
+
+        try:
+            concat_file.unlink()
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "video": f"/generated/{output_name}",
+            "filename": output_name,
+        }
+
+    except Exception as e:
+
+        return {
+            "success": False,
+            "error": "Video composition failed",
+            "details": str(e),
+        }
+
+
+# ==================================================
+# DOWNLOAD FINAL VIDEO
+# ==================================================
+
+@app.get("/download-video/{filename}")
+def download_video(filename: str):
+
+    # Prevent directory traversal
+    safe_filename = Path(filename).name
+
+    file_path = GENERATED_DIR / safe_filename
+
+    if not file_path.exists():
+
+        raise HTTPException(
+            status_code=404,
+            detail="Video not found",
+        )
+
+    if file_path.suffix.lower() != ".mp4":
+
+        raise HTTPException(
+            status_code=400,
+            detail="Only MP4 video files can be downloaded",
+        )
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="video/mp4",
+        filename="qoneqt-ai-video.mp4",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="qoneqt-ai-video.mp4"'
+            )
+        },
+    )
